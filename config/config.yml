@@ -1,0 +1,35 @@
+# Server configuration
+server:
+  port: 8000
+  host: "0.0.0.0"
+  read_timeout: 60
+  write_timeout: 60
+  debug: false
+
+# Database configuration (non-sensitive)
+database:
+  host: "127.0.0.1"
+  port: 3306
+  name: "freescholar"
+  user: "freescholar_user"
+
+# Redis configuration (non-sensitive)
+redis:
+  host: "127.0.0.1"
+  port: 6379
+  db: 0
+
+# Elasticsearch configuration
+elasticsearch:
+  url: "http://127.0.0.1:9200"
+
+# Email configuration (non-sensitive)
+email:
+  host: "smtp.qq.com"
+  port: 25
+  use_tls: false
+
+# Media configuration
+media:
+  root: "./media"
+  url: "/media/"
