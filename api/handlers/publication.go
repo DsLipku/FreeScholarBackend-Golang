@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -174,7 +175,7 @@ func (h *PublicationHandler) GetPublication(c *gin.Context) {
 // CreatePublication handles creating a new publication
 func (h *PublicationHandler) CreatePublication(c *gin.Context) {
 	// Get user ID from context (set by auth middleware)
-	userID, exists := c.Get("userID")
+	_, exists := c.Get("userID")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
@@ -281,7 +282,7 @@ func (h *PublicationHandler) CreatePublication(c *gin.Context) {
 	})
 }
 
-// UpdatePublication handles updating an existing publication
+// Completing the UpdatePublication method that was cut off
 func (h *PublicationHandler) UpdatePublication(c *gin.Context) {
 	id := c.Param("id")
 	
@@ -325,10 +326,221 @@ func (h *PublicationHandler) UpdatePublication(c *gin.Context) {
 
 	// Update publication fields
 	updates := map[string]interface{}{
-		"title":       input.Title,
-		"abstract":    input.Abstract,
-		"doi":         input.DOI,
-		"journal":     input.Journal,
-		"volume":      input.Volume,
-		"issue":       input.Issue,
-		"pages":	
+		"title":           input.Title,
+		"abstract":        input.Abstract,
+		"doi":             input.DOI,
+		"journal":         input.Journal,
+		"volume":          input.Volume,
+		"issue":           input.Issue,
+		"pages":           input.Pages,
+		"publisher":       input.Publisher,
+		"url":             input.URL,
+	}
+	
+	// Only update publication date if provided
+	if !pubDate.IsZero() {
+		updates["publication_date"] = pubDate
+	}
+
+	if err := tx.Model(&publication).Updates(updates).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update publication"})
+		return
+	}
+
+	// Update keywords (clear and re-add)
+	if len(input.Keywords) > 0 {
+		// Remove existing keywords association
+		if err := tx.Model(&publication).Association("Keywords").Clear(); err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to clear keywords"})
+			return
+		}
+
+		// Add new keywords
+		for _, keyword := range input.Keywords {
+			var existingKeyword models.Keyword
+			result := tx.Where("name = ?", keyword).First(&existingKeyword)
+			
+			if result.RowsAffected == 0 {
+				// Create new keyword if it doesn't exist
+				existingKeyword = models.Keyword{Name: keyword}
+				if err := tx.Create(&existingKeyword).Error; err != nil {
+					tx.Rollback()
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create keyword"})
+					return
+				}
+			}
+			
+			// Associate keyword with publication
+			if err := tx.Model(&publication).Association("Keywords").Append(&existingKeyword); err != nil {
+				tx.Rollback()
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to associate keyword"})
+				return
+			}
+		}
+	}
+
+	// Update authors (if provided)
+	if len(input.Authors) > 0 {
+		// Delete existing publication-author relationships
+		if err := tx.Where("publication_id = ?", publication.ID).Delete(&models.PublicationAuthor{}).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to clear author associations"})
+			return
+		}
+
+		// Create new publication-author relationships
+		for i, authorID := range input.Authors {
+			var author models.Author
+			if err := tx.First(&author, authorID).Error; err != nil {
+				tx.Rollback()
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Author not found: " + strconv.Itoa(int(authorID))})
+				return
+			}
+			
+			// Create publication-author relationship with order
+			pubAuthor := models.PublicationAuthor{
+				PublicationID: publication.ID,
+				AuthorID:      author.ID,
+				Order:         i,
+			}
+			
+			if err := tx.Create(&pubAuthor).Error; err != nil {
+				tx.Rollback()
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to associate author"})
+				return
+			}
+		}
+	}
+
+	// Commit transaction
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit transaction"})
+		return
+	}
+
+	// Re-fetch the publication with updated relationships
+	h.db.Preload("Authors").Preload("Keywords").First(&publication, publication.ID)
+
+	// Update in Elasticsearch
+	go h.indexPublication(publication)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":     "Publication updated successfully",
+		"publication": publication,
+	})
+}
+
+// DeletePublication handles deleting a publication
+func (h *PublicationHandler) DeletePublication(c *gin.Context) {
+	id := c.Param("id")
+	
+	// Get user ID from context (set by auth middleware)
+	_, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	// Check if publication exists
+	var publication models.Publication
+	if err := h.db.First(&publication, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Publication not found"})
+		return
+	}
+
+	// Start a transaction
+	tx := h.db.Begin()
+	if tx.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start transaction"})
+		return
+	}
+
+	// Delete all publication-author relationships
+	if err := tx.Where("publication_id = ?", publication.ID).Delete(&models.PublicationAuthor{}).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete author associations"})
+		return
+	}
+
+	// Remove all keyword associations (uses many-to-many relationship)
+	if err := tx.Model(&publication).Association("Keywords").Clear(); err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to clear keyword associations"})
+		return
+	}
+
+	// Delete the publication
+	if err := tx.Delete(&publication).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete publication"})
+		return
+	}
+
+	// Commit transaction
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit transaction"})
+		return
+	}
+
+	// Delete from Elasticsearch
+	go func() {
+		ctx := context.Background()
+		_, err := h.esClient.Delete().
+			Index("publications").
+			Id(id).
+			Do(ctx)
+		
+		if err != nil {
+			// Log the error but don't fail the response
+			// since MySQL deletion was successful
+			log.Printf("Error deleting publication from Elasticsearch: %v", err)
+		}
+	}()
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Publication deleted successfully",
+	})
+}
+
+// indexPublication indexes a publication in Elasticsearch
+func (h *PublicationHandler) indexPublication(publication models.Publication) {
+	// Create a search model of the publication
+	var authors []string
+	for _, author := range publication.Authors {
+		authors = append(authors, author.Name)
+	}
+
+	var keywords []string
+	for _, keyword := range publication.Keywords {
+		keywords = append(keywords, keyword.Name)
+	}
+
+	pubSearch := models.PublicationSearch{
+		ID:              publication.ID,
+		Title:           publication.Title,
+		Abstract:        publication.Abstract,
+		Authors:         authors,
+		Keywords:        keywords,
+		DOI:             publication.DOI,
+		PublicationDate: publication.PublicationDate,
+		Journal:         publication.Journal,
+		CitationCount:   publication.CitationCount,
+	}
+
+	// Index document in Elasticsearch
+	ctx := context.Background()
+	id := strconv.Itoa(int(publication.ID))
+	
+	_, err := h.esClient.Index().
+		Index("publications").
+		Id(id).
+		BodyJson(pubSearch).
+		Do(ctx)
+		
+	if err != nil {
+		// Log error but don't stop execution
+		log.Printf("Failed to index publication in Elasticsearch: %v", err)
+	}
+}

@@ -37,7 +37,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, redisClient *redis.Client, esC
 
 	// Initialize handlers
 	userHandler := handlers.NewUserHandler(db, redisClient, cfg)
-	//publicationHandler := handlers.NewPublicationHandler(db, esClient, cfg)
+	publicationHandler := handlers.NewPublicationHandler(db, esClient, cfg)
 	//authorHandler := handlers.NewAuthorHandler(db, esClient, cfg)
 	//scholarPortalHandler := handlers.NewScholarPortalHandler(db, cfg)
 	//relationHandler := handlers.NewRelationHandler(db, cfg)
@@ -64,7 +64,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, redisClient *redis.Client, esC
 			userRoutes.POST("/reset-password/:token", userHandler.ResetPassword)
 		}
 	
-		/*
+		
 		// Publication routes
 		publicationRoutes := api.Group("/publication")
 		{
@@ -74,7 +74,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, redisClient *redis.Client, esC
 			publicationRoutes.PUT("/:id", authMiddleware.RequireAuth(), publicationHandler.UpdatePublication)
 			publicationRoutes.DELETE("/:id", authMiddleware.RequireAuth(), publicationHandler.DeletePublication)
 		}
-
+		/*
 		// Author routes
 		authorRoutes := api.Group("/author")
 		{
