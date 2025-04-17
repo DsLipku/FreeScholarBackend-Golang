@@ -3,19 +3,18 @@ package main
 import (
 	"context"
 	"fmt"
+	"freescholar-backend/api/routers"
+	"freescholar-backend/config"
+	"freescholar-backend/internal/models"
+	"freescholar-backend/pkg/elasticsearch"
+	"freescholar-backend/pkg/mysql"
+	"freescholar-backend/pkg/redis"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
-
-	"freescholar-backend/api/routes"
-	"freescholar-backend/config"
-	"freescholar-backend/internal/models"
-	"freescholar-backend/pkg/elasticsearch"
-	"freescholar-backend/pkg/mysql"
-	"freescholar-backend/pkg/redis"
 
 	"gorm.io/gorm"
 )
@@ -60,7 +59,7 @@ func main() {
 	}
 
 	// Set up Gin router with routes
-	router := routes.SetupRouter(cfg, db, redisClient, esClient)
+	router := routers.SetupRouter(cfg, db, redisClient, esClient)
 
 	// Create HTTP server
 	server := &http.Server{
